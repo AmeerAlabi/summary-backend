@@ -69,7 +69,7 @@ async function extractKeyPoints(text) {
         { role: 'system', content: 'You are a helpful assistant that extracts key points from text.' },
         { role: 'user', content: `Extract key points from the following text:\n\n${text}` },
       ],
-      max_tokens: 500, // Adjust based on your needs
+      max_tokens: 500, 
     });
 
     console.log('OpenAI Response:', response);
