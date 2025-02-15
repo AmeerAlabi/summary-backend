@@ -1,152 +1,109 @@
-import express from "express";
-import multer from "multer";
-import dotenv from "dotenv";
-import cors from "cors";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import rateLimit from "express-rate-limit";
-import { PdfReader } from "pdfreader";
-import { createWorker } from "tesseract.js";
+import express from 'express';
+import multer from 'multer';
+import { getDocument } from 'pdfjs-dist';
+import dotenv from 'dotenv';
+import cors from 'cors';  // ✅ Import CORS
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 dotenv.config();
 
 const app = express();
+const upload = multer({ storage: multer.memoryStorage() });
 
-// Trust the proxy (e.g., Vercel)
-app.set("trust proxy", true);
+// ✅ Enable CORS for frontend requests
+app.use(cors({ 
+  origin: "*", // Temporarily allow all origins for testing
+  methods: "GET,POST",
+  allowedHeaders: "Content-Type",
+}));
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB file size limit
-});
+app.use(express.json());  // ✅ Middleware for JSON support
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-});
-app.use(limiter);
-
-// CORS configuration (no restrictions)
-app.use(cors()); // Allow all origins, methods, and headers
-app.use(express.json());
-
-// Initialize Google Generative AI
+// Initialize Gemini API
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-/**
- * Extracts text from an image using OCR (Tesseract.js).
- * @param {Buffer} buffer - The image buffer.
- * @returns {Promise<string>} - Extracted text.
- */
-async function extractTextFromImage(buffer) {
+// 📝 Parse PDF and extract text using pdfjs-dist
+async function parsePDF(buffer) {
   try {
-    const worker = await createWorker();
-    await worker.loadLanguage("eng");
-    await worker.initialize("eng");
-    const { data: { text } } = await worker.recognize(buffer);
-    await worker.terminate();
-    return text.trim();
+    const uint8Array = new Uint8Array(buffer);
+    const pdf = await getDocument(uint8Array).promise;
+    let text = '';
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      text += content.items.map((item) => item.str).join(' ');
+    }
+
+    console.log('✅ Extracted text:', text.substring(0, 200)); // Debugging log
+    return text;
   } catch (error) {
-    console.error("❌ OCR Error:", error);
-    throw new Error("Failed to extract text using OCR");
+    console.error('❌ Error parsing PDF:', error);
+    throw new Error('Failed to parse PDF');
   }
 }
 
-/**
- * Parses a PDF buffer and extracts text using pdfreader.
- * Falls back to OCR if text extraction fails.
- * @param {Buffer} buffer - The PDF file buffer.
- * @returns {Promise<string>} - Extracted text from the PDF.
- */
-async function parsePDF(buffer) {
-  return new Promise((resolve, reject) => {
-    const reader = new PdfReader();
-    let text = "";
-
-    reader.parseBuffer(buffer, (err, item) => {
-      if (err) {
-        console.error("❌ PDF Parsing Error:", err);
-        reject(new Error("Failed to parse PDF"));
-      } else if (!item) {
-        // End of file
-        if (!text || text.length < 10) {
-          console.log("🔍 No text found with pdfreader, trying OCR...");
-          extractTextFromImage(buffer)
-            .then((ocrText) => {
-              if (!ocrText || ocrText.length < 10) {
-                reject(new Error("Extracted text is empty or too short"));
-              } else {
-                resolve(ocrText);
-              }
-            })
-            .catch((ocrError) => {
-              reject(ocrError);
-            });
-        } else {
-          resolve(text);
-        }
-      } else if (item.text) {
-        text += item.text + " ";
-      }
-    });
-  });
+// 📌 Helper function for exponential backoff retries
+async function retryWithBackoff(fn, retries = 3, delayMs = 2000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      console.error(`⚠️ Attempt ${i + 1} failed:`, error.message);
+      if (i === retries - 1) throw new Error('Exceeded retry attempts');
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs *= 2; // Exponential backoff
+    }
+  }
 }
 
-/**
- * Summarizes text using Google's Gemini API.
- * @param {string} text - The text to summarize.
- * @returns {Promise<string>} - The summarized text.
- */
+// ✨ Summarize extracted text using Gemini
 async function summarizeText(text) {
-  try {
-    console.log("🔹 Sending text to Gemini...");
+  return retryWithBackoff(async () => {
+    console.log('🔹 Sending text to Gemini for summarization:', text.substring(0, 200));
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
     const response = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: `Summarize this text in 500 words:\n\n${text}` }] }],
+      contents: [{ role: 'user', parts: [{ text: `Summarize this text in 2000 words:\n\n${text}` }] }]
     });
 
+    console.log('🛠 Full API Response:', JSON.stringify(response, null, 2));
+
+    // ✅ Extract the summary correctly
     const summary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
     if (!summary) {
-      throw new Error("Invalid Gemini response: No summary found");
+      throw new Error('Invalid response format: No summary found');
     }
 
-    console.log("✅ Gemini Summary (First 500 chars):", summary.substring(0, 500));
+    console.log('✅ Gemini Summary:', summary);
     return summary;
-  } catch (error) {
-    console.error("❌ Error in summarization:", error);
-    throw new Error("Failed to summarize text");
-  }
+  });
 }
 
-/**
- * POST endpoint to handle file uploads.
- */
-app.post("/upload", upload.single("file"), async (req, res) => {
+// 📤 Upload route (handles PDF processing)
+app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ success: false, error: "No file uploaded" });
+      return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    if (req.file.mimetype !== "application/pdf") {
-      return res.status(400).json({ success: false, error: "Only PDF files allowed" });
+    if (req.file.mimetype !== 'application/pdf') {
+      return res.status(400).json({ error: 'Invalid file type. Only PDF files are allowed.' });
     }
 
     const buffer = req.file.buffer;
     const text = await parsePDF(buffer);
 
-    console.log("📄 Final Extracted Text:", text.substring(0, 500));
-
     const summary = await summarizeText(text);
+
     res.json({ success: true, summary });
   } catch (error) {
-    console.error("❌ Error processing file:", error);
-    res.status(500).json({ success: false, error: error.message || "Failed to process file" });
+    console.error('❌ Error processing file:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to process file' });
   }
 });
 
-// Start the server
+// 🌍 Start the server
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
