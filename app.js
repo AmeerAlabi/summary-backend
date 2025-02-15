@@ -1,16 +1,16 @@
 import express from 'express';
 import multer from 'multer';
-import * as pdfjsLib from 'pdfjs-dist';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.js';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { readFile } from 'fs/promises';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
 dotenv.config();
 
 const app = express();
-
-// Configure PDF.js for serverless
-pdfjsLib.GlobalWorkerOptions.workerSrc = '';  // Disable worker
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -29,28 +29,25 @@ app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Updated PDF parsing function
+// Updated PDF parsing function with legacy build
 async function parsePDF(buffer) {
   try {
     console.log('Starting PDF parsing...');
     
-    // Create Uint8Array from buffer
-    const data = new Uint8Array(buffer);
-    
-    // Initialize document with specific options for serverless
-    const loadingTask = pdfjsLib.getDocument({
-      data,
+    const loadingTask = getDocument({
+      data: buffer,
       useWorkerFetch: false,
       isEvalSupported: false,
       useSystemFonts: true,
-      disableFontFace: true
+      disableFontFace: true,
+      nativeImageDecoderSupport: 'none'
     });
 
     const pdf = await loadingTask.promise;
     console.log(`PDF loaded. Number of pages: ${pdf.numPages}`);
     
     let text = '';
-    const maxPages = Math.min(pdf.numPages, 50); // Process up to 50 pages
+    const maxPages = Math.min(pdf.numPages, 50);
     
     for (let i = 1; i <= maxPages; i++) {
       console.log(`Processing page ${i}/${maxPages}`);
@@ -75,7 +72,6 @@ async function summarizeText(text) {
     console.log('Starting text summarization...');
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
     
-    // Break text into chunks if too long
     const maxChunkLength = 30000;
     const chunks = text.match(new RegExp(`.{1,${maxChunkLength}}`, 'g')) || [];
     
@@ -102,7 +98,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   console.log('Upload request received');
   
   try {
-    // Validate request
     if (!req.file) {
       console.log('No file provided');
       return res.status(400).json({ error: 'No file uploaded' });
@@ -118,11 +113,9 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Only PDF files are allowed' });
     }
 
-    // Process PDF
     const text = await parsePDF(req.file.buffer);
     console.log('Text extracted, length:', text.length);
 
-    // Generate summary
     const summary = await summarizeText(text);
     console.log('Summary generated, length:', summary.length);
 
@@ -137,7 +130,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// Health check endpoint
 app.get("/", (req, res) => {
   res.status(200).json({ 
     status: 'healthy',
