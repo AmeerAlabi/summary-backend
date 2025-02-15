@@ -1,4 +1,4 @@
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.js';
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import express from 'express';
 import multer from 'multer';
 import dotenv from 'dotenv';
@@ -19,8 +19,9 @@ const upload = multer({
   }
 });
 
+// Fix the CORS configuration
 app.use(cors({
-  origin: "*" , 'https://sum-flax.vercel.app/',
+  origin: "https://sum-flax.vercel.app", // Allow only this origin
   methods: ["GET", "POST"],
   allowedHeaders: ["Content-Type"],
 }));
