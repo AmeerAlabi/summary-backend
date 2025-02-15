@@ -1,105 +1,112 @@
-import express from "express";
-import multer from "multer";
-import pdfParse from "pdf-parse";
-import dotenv from "dotenv";
-import cors from "cors";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import express from 'express';
+import multer from 'multer';
+import { getDocument } from 'pdfjs-dist';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 dotenv.config();
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
 
-// ✅ Enable CORS for frontend requests
-app.use(cors({ 
-  origin: "*",n
-  methods: "GET,POST",
-  allowedHeaders: "Content-Type",
+// Configure multer with file size limit
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 4 * 1024 * 1024 // 4MB limit
+  }
+});
+
+// CORS configuration
+app.use(cors({
+  origin: process.env.FRONTEND_URL || "*", // Ideally set specific origin
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type"],
+  credentials: true
 }));
 
 app.use(express.json());
 
-// Initialize Gemini API
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// 📌 Extract text from PDF using `pdf-parse`
+// Optimized PDF parsing function
 async function parsePDF(buffer) {
   try {
-    const data = await pdfParse(buffer);
-    console.log("✅ Extracted text:", data.text.substring(0, 200)); // Debugging log
-    return data.text;
-  } catch (error) {
-    console.error("❌ Error parsing PDF:", error);
-    throw new Error("Failed to parse PDF");
-  }
-}
-
-// 📌 Helper function for exponential backoff retries
-async function retryWithBackoff(fn, retries = 3, delayMs = 2000) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fn();
-    } catch (error) {
-      console.error(`⚠️ Attempt ${i + 1} failed:`, error.message);
-      if (i === retries - 1) throw new Error("Exceeded retry attempts");
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs *= 2; // Exponential backoff
-    }
-  }
-}
-
-// ✨ Summarize extracted text using Gemini API
-async function summarizeText(text, wordLimit = 2000) {
-  return retryWithBackoff(async () => {
-    console.log("🔹 Sending text to Gemini for summarization:", text.substring(0, 200));
-
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-    const response = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: `Summarize this text in ${wordLimit} words:\n\n${text}` }] }]
-    });
-
-    console.log("🛠 Full API Response:", JSON.stringify(response, null, 2));
-
-    // ✅ Extract the summary correctly
-    const summary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-
-    if (!summary) {
-      throw new Error("Invalid response format: No summary found");
-    }
-
-    console.log("✅ Gemini Summary:", summary);
-    return summary;
-  });
-}
-
-// 📤 Upload route (handles PDF processing)
-app.post("/upload", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-
-    if (req.file.mimetype !== "application/pdf") {
-      return res.status(400).json({ error: "Invalid file type. Only PDF files are allowed." });
-    }
-
-    const buffer = req.file.buffer;
-    const text = await parsePDF(buffer);
+    console.log('Starting PDF parsing...');
+    const uint8Array = new Uint8Array(buffer);
+    const pdf = await getDocument({ data: uint8Array }).promise;
     
-    const wordLimit = req.body.wordLimit || 2000;
-    const summary = await summarizeText(text, wordLimit);
-
-    res.json({ success: true, summary });
+    let text = '';
+    const maxPages = Math.min(pdf.numPages, 50); // Limit number of pages
+    
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      text += content.items.map(item => item.str).join(' ');
+      
+      // Free up memory
+      page.cleanup();
+    }
+    
+    console.log(`Successfully parsed ${maxPages} pages`);
+    return text;
   } catch (error) {
-    console.error("❌ Error processing file:", error);
-    res.status(500).json({ success: false, error: error.message || "Failed to process file" });
+    console.error('PDF parsing error:', error);
+    throw new Error(`PDF parsing failed: ${error.message}`);
+  }
+}
+
+// Modified upload route with better error handling
+app.post('/upload', upload.single('file'), async (req, res) => {
+  console.log('Received upload request');
+  
+  try {
+    // File validation
+    if (!req.file) {
+      console.log('No file provided');
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    if (req.file.mimetype !== 'application/pdf') {
+      console.log('Invalid file type:', req.file.mimetype);
+      return res.status(400).json({ error: 'Only PDF files are allowed' });
+    }
+
+    // Check file size
+    if (req.file.size > 4 * 1024 * 1024) {
+      console.log('File too large:', req.file.size);
+      return res.status(400).json({ error: 'File size exceeds 4MB limit' });
+    }
+
+    console.log('Processing PDF file...');
+    const text = await parsePDF(req.file.buffer);
+
+    // Split text into chunks if too long
+    const maxChunkLength = 30000; // Adjust based on Gemini's limits
+    const textChunks = text.match(new RegExp(`.{1,${maxChunkLength}}`, 'g')) || [];
+    
+    let summary = '';
+    for (const chunk of textChunks) {
+      const chunkSummary = await summarizeText(chunk);
+      summary += chunkSummary + '\n\n';
+    }
+
+    console.log('Successfully processed file');
+    res.json({ success: true, summary });
+    
+  } catch (error) {
+    console.error('Error in upload route:', error);
+    res.status(500).json({
+      success: false,
+      error: 'File processing failed',
+      details: error.message
+    });
   }
 });
 
+// Health check endpoint
 app.get("/", (req, res) => {
-  res.send("Backend is working!");
+  res.status(200).json({ status: 'healthy' });
 });
 
-// 🌍 Start the server
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+export default app;
