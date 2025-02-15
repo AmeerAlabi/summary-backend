@@ -12,10 +12,11 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // ✅ Enable CORS for frontend requests
 app.use(cors({ 
-  origin: "https://sum-flax.vercel.app/",  // Adjust this if frontend is hosted elsewhere
+  origin: "*", // Temporarily allow all origins for testing
   methods: "GET,POST",
   allowedHeaders: "Content-Type",
 }));
+
 
 app.use(express.json());  // ✅ Middleware for JSON support
 
