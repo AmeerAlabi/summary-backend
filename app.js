@@ -20,7 +20,7 @@ const upload = multer({
 });
 
 app.use(cors({
-  origin: "*",
+  origin: "*" , 'https://sum-flax.vercel.app/',
   methods: ["GET", "POST"],
   allowedHeaders: ["Content-Type"],
 }));
