@@ -12,7 +12,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // ✅ Enable CORS for frontend requests
 app.use(cors({ 
-  origin: "*", // Change this to your frontend domain in production
+  origin: "*",n
   methods: "GET,POST",
   allowedHeaders: "Content-Type",
 }));
