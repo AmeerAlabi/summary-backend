@@ -7,11 +7,10 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 dotenv.config();
 
-// Configure PDF.js for serverless environment
-const pdfjsDistPath = 'pdfjs-dist/build/pdf.worker.mjs';
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsDistPath;
-
 const app = express();
+
+// Configure PDF.js for serverless
+pdfjsLib.GlobalWorkerOptions.workerSrc = '';  // Disable worker
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -30,37 +29,41 @@ app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Modified PDF parsing function for serverless environment
+// Updated PDF parsing function
 async function parsePDF(buffer) {
   try {
     console.log('Starting PDF parsing...');
     
-    // Configure PDF.js to use built-in worker
-    pdfjsLib.GlobalWorkerOptions.workerSrc = false;
+    // Create Uint8Array from buffer
+    const data = new Uint8Array(buffer);
     
+    // Initialize document with specific options for serverless
     const loadingTask = pdfjsLib.getDocument({
-      data: buffer,
-      verbosity: 0,
+      data,
+      useWorkerFetch: false,
+      isEvalSupported: false,
       useSystemFonts: true,
-      disableFontFace: true,
-      useWorkerFetch: false
+      disableFontFace: true
     });
-    
+
     const pdf = await loadingTask.promise;
-    let text = '';
+    console.log(`PDF loaded. Number of pages: ${pdf.numPages}`);
     
-    // Limit number of pages to process
-    const maxPages = Math.min(pdf.numPages, 50);
+    let text = '';
+    const maxPages = Math.min(pdf.numPages, 50); // Process up to 50 pages
     
     for (let i = 1; i <= maxPages; i++) {
+      console.log(`Processing page ${i}/${maxPages}`);
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      text += content.items.map(item => item.str).join(' ');
+      text += content.items.map(item => item.str).join(' ') + ' ';
+      
+      // Clean up page resources
       await page.cleanup();
     }
     
-    console.log('PDF parsing successful');
-    return text;
+    console.log('PDF parsing completed successfully');
+    return text.trim();
   } catch (error) {
     console.error('PDF parsing error:', error);
     throw new Error(`PDF parsing failed: ${error.message}`);
@@ -71,16 +74,24 @@ async function summarizeText(text) {
   try {
     console.log('Starting text summarization...');
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
-    const response = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: `Summarize this text in 2000 words:\n\n${text}` }] }]
-    });
     
-    const summary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!summary) {
-      throw new Error('No summary generated');
+    // Break text into chunks if too long
+    const maxChunkLength = 30000;
+    const chunks = text.match(new RegExp(`.{1,${maxChunkLength}}`, 'g')) || [];
+    
+    let fullSummary = '';
+    for (const chunk of chunks) {
+      const response = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: `Summarize this text in a concise manner:\n\n${chunk}` }] }]
+      });
+      
+      const chunkSummary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (chunkSummary) {
+        fullSummary += chunkSummary + '\n\n';
+      }
     }
     
-    return summary;
+    return fullSummary.trim();
   } catch (error) {
     console.error('Summarization error:', error);
     throw new Error(`Summarization failed: ${error.message}`);
@@ -91,29 +102,47 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   console.log('Upload request received');
   
   try {
+    // Validate request
     if (!req.file) {
+      console.log('No file provided');
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
+    console.log('File received:', {
+      size: req.file.size,
+      mimetype: req.file.mimetype
+    });
+
     if (req.file.mimetype !== 'application/pdf') {
+      console.log('Invalid file type:', req.file.mimetype);
       return res.status(400).json({ error: 'Only PDF files are allowed' });
     }
 
+    // Process PDF
     const text = await parsePDF(req.file.buffer);
+    console.log('Text extracted, length:', text.length);
+
+    // Generate summary
     const summary = await summarizeText(text);
-    
+    console.log('Summary generated, length:', summary.length);
+
     res.json({ success: true, summary });
   } catch (error) {
     console.error('Error processing file:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to process file'
+      error: error.message || 'Failed to process file',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
 
+// Health check endpoint
 app.get("/", (req, res) => {
-  res.status(200).json({ status: 'healthy' });
+  res.status(200).json({ 
+    status: 'healthy',
+    version: '1.0.0'
+  });
 });
 
 export default app;
