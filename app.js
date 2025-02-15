@@ -1,21 +1,26 @@
 import express from 'express';
 import multer from 'multer';
 import { getDocument } from 'pdfjs-dist';
-import OpenAI from 'openai';
 import dotenv from 'dotenv';
+import cors from 'cors';  // ✅ Import CORS
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 dotenv.config();
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Initialize OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY, // Ensure this is set in .env
-});
+// ✅ Enable CORS for frontend requests
+app.use(cors({ 
+  origin: "http://localhost:5173",  // Adjust this if frontend is hosted elsewhere
+  methods: "GET,POST",
+  allowedHeaders: "Content-Type",
+}));
 
-// Middleware
-app.use(express.json());
+app.use(express.json());  // ✅ Middleware for JSON support
+
+// Initialize Gemini API
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // 📝 Parse PDF and extract text using pdfjs-dist
 async function parsePDF(buffer) {
@@ -30,54 +35,50 @@ async function parsePDF(buffer) {
       text += content.items.map((item) => item.str).join(' ');
     }
 
-    console.log('Extracted text:', text.substring(0, 200)); // Log first 200 chars for debugging
+    console.log('✅ Extracted text:', text.substring(0, 200)); // Debugging log
     return text;
   } catch (error) {
-    console.error('Error parsing PDF:', error);
+    console.error('❌ Error parsing PDF:', error);
     throw new Error('Failed to parse PDF');
   }
 }
 
-// ✨ Summarize extracted text using OpenAI
-async function summarizeText(text) {
-  try {
-    console.log('Sending text to OpenAI for summarization:', text.substring(0, 200)); // Debugging log
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo', // Use 'gpt-4' if you have access
-      messages: [
-        { role: 'system', content: 'You are a helpful assistant that summarizes text and provides key insights.' },
-        { role: 'user', content: `Summarize the following text and provide 3 key insights:\n\n${text}` },
-      ],
-      max_tokens: 500, // Adjust based on your needs
-    });
-
-    console.log('OpenAI Response:', response);
-    return response.choices[0].message.content.trim();
-  } catch (error) {
-    console.error('Error summarizing text:', error);
-    throw new Error('Failed to summarize text');
+// 📌 Helper function for exponential backoff retries
+async function retryWithBackoff(fn, retries = 3, delayMs = 2000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      console.error(`⚠️ Attempt ${i + 1} failed:`, error.message);
+      if (i === retries - 1) throw new Error('Exceeded retry attempts');
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs *= 2; // Exponential backoff
+    }
   }
 }
 
-// 🔑 Extract key points using OpenAI
-async function extractKeyPoints(text) {
-  try {
-    console.log('Sending text to OpenAI for key points:', text.substring(0, 200));
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo', // Use 'gpt-4' if you have access
-      messages: [
-        { role: 'system', content: 'You are a helpful assistant that extracts key points from text.' },
-        { role: 'user', content: `Extract key points from the following text:\n\n${text}` },
-      ],
-      max_tokens: 500, 
+// ✨ Summarize extracted text using Gemini
+async function summarizeText(text) {
+  return retryWithBackoff(async () => {
+    console.log('🔹 Sending text to Gemini for summarization:', text.substring(0, 200));
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+    const response = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: `Summarize this text in 2000 words:\n\n${text}` }] }]
     });
 
-    console.log('OpenAI Response:', response);
-    return response.choices[0].message.content.trim().split('\n');
-  } catch (error) {
-    console.error('Error extracting key points:', error);
-    throw new Error('Failed to extract key points');
-  }
+    console.log('🛠 Full API Response:', JSON.stringify(response, null, 2));
+
+    // ✅ Extract the summary correctly
+    const summary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+    if (!summary) {
+      throw new Error('Invalid response format: No summary found');
+    }
+
+    console.log('✅ Gemini Summary:', summary);
+    return summary;
+  });
 }
 
 // 📤 Upload route (handles PDF processing)
@@ -95,12 +96,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     const text = await parsePDF(buffer);
 
     const summary = await summarizeText(text);
-    const keyPoints = await extractKeyPoints(text);
 
-    res.json({ summary, keyPoints });
+    res.json({ success: true, summary });
   } catch (error) {
-    console.error('Error processing file:', error);
-    res.status(500).json({ error: error.message || 'Failed to process file' });
+    console.error('❌ Error processing file:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to process file' });
   }
 });
 
