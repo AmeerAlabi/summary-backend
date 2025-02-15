@@ -10,6 +10,10 @@ import { createWorker } from "tesseract.js";
 dotenv.config();
 
 const app = express();
+
+// Trust the proxy (e.g., Vercel)
+app.set("trust proxy", true);
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB file size limit
