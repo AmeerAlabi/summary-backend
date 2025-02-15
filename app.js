@@ -27,7 +27,7 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // CORS configuration
-app.use(cors({ origin: "https://sum-flax.vercel.app", methods: "GET,POST", allowedHeaders: "Content-Type" }));
+app.use(cors()); // Allow all origins
 app.use(express.json());
 
 // Initialize Google Generative AI
