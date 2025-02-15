@@ -10,91 +10,69 @@ dotenv.config();
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ✅ Enable CORS for frontend requests
-app.use(
-  cors({
-    origin: "https://sum-flax.vercel.app", // Make sure this is correct
-    methods: "GET,POST",
-    allowedHeaders: "Content-Type",
-  })
-);
-
+app.use(cors({ origin: "https://sum-flax.vercel.app", methods: "GET,POST", allowedHeaders: "Content-Type" }));
 app.use(express.json());
 
-// ✅ Initialize Gemini API
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// 📝 Parse PDF and extract text using pdf2json
 async function parsePDF(buffer) {
   return new Promise((resolve, reject) => {
     const pdfParser = new PDFParser();
 
     pdfParser.on("pdfParser_dataError", (err) => {
-      console.error("❌ Error parsing PDF:", err);
+      console.error("❌ PDF Parsing Error:", err);
       reject(new Error("Failed to parse PDF"));
     });
 
     pdfParser.on("pdfParser_dataReady", () => {
-      const text = pdfParser.getRawTextContent();
-      console.log("✅ Extracted text:", text.substring(0, 200)); // Debugging log
-      resolve(text);
+      let extractedText = pdfParser.getRawTextContent().trim();
+      
+      console.log("✅ Extracted Text (First 500 chars):", extractedText.substring(0, 500));
+
+      if (!extractedText || extractedText.length < 10) {
+        reject(new Error("Extracted text is empty or too short"));
+      } else {
+        resolve(extractedText);
+      }
     });
 
     pdfParser.parseBuffer(buffer);
   });
 }
 
-// 📌 Helper function for exponential backoff retries
-async function retryWithBackoff(fn, retries = 3, delayMs = 2000) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fn();
-    } catch (error) {
-      console.error(`⚠️ Attempt ${i + 1} failed:`, error.message);
-      if (i === retries - 1) throw new Error("Exceeded retry attempts");
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs *= 2; // Exponential backoff
+async function summarizeText(text) {
+  try {
+    console.log("🔹 Sending text to Gemini...");
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+
+    const response = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: `Summarize this text in 500 words:\n\n${text}` }] }],
+    });
+
+    const summary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    
+    if (!summary) {
+      throw new Error("Invalid Gemini response: No summary found");
     }
+
+    console.log("✅ Gemini Summary (First 500 chars):", summary.substring(0, 500));
+    return summary;
+  } catch (error) {
+    console.error("❌ Error in summarization:", error);
+    throw new Error("Failed to summarize text");
   }
 }
 
-// ✨ Summarize extracted text using Gemini
-async function summarizeText(text) {
-  return retryWithBackoff(async () => {
-    console.log("🔹 Sending text to Gemini for summarization:", text.substring(0, 200));
-
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-    const response = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: `Summarize this text in 2000 words:\n\n${text}` }] }],
-    });
-
-    console.log("🛠 Full API Response:", JSON.stringify(response, null, 2));
-
-    // ✅ Extract the summary correctly
-    const summary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-
-    if (!summary) {
-      throw new Error("Invalid response format: No summary found");
-    }
-
-    console.log("✅ Gemini Summary:", summary);
-    return summary;
-  });
-}
-
-// 📤 Upload route (handles PDF processing)
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-
-    if (req.file.mimetype !== "application/pdf") {
-      return res.status(400).json({ error: "Invalid file type. Only PDF files are allowed." });
-    }
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    if (req.file.mimetype !== "application/pdf") return res.status(400).json({ error: "Only PDF files allowed" });
 
     const buffer = req.file.buffer;
     const text = await parsePDF(buffer);
+    
+    console.log("📄 Final Extracted Text:", text.substring(0, 500));
 
     const summary = await summarizeText(text);
 
@@ -105,6 +83,5 @@ app.post("/upload", upload.single("file"), async (req, res) => {
   }
 });
 
-// 🌍 Start the server
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
