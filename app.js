@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import Tesseract from 'tesseract.js';
 
 // ✅ Fix the worker source issue
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.0.279/pdf.worker.min.js';
@@ -60,11 +61,28 @@ async function parsePDF(buffer) {
       await page.cleanup();
     }
 
+    if (!text.trim()) {
+      console.log('⚠️ No text extracted from PDF. Trying OCR...');
+      text = await extractTextWithOCR(buffer);
+    }
+
     console.log('✅ PDF parsing completed successfully');
     return text.trim();
   } catch (error) {
     console.error('❌ PDF Parsing Error:', error);
     throw new Error('Failed to extract text from PDF');
+  }
+}
+
+async function extractTextWithOCR(buffer) {
+  try {
+    console.log('🖼️ Running OCR on PDF...');
+    const { data: { text } } = await Tesseract.recognize(buffer, 'eng');
+    console.log('✅ OCR extraction successful');
+    return text.trim();
+  } catch (error) {
+    console.error('❌ OCR Extraction Error:', error);
+    throw new Error('Failed to extract text using OCR');
   }
 }
 
