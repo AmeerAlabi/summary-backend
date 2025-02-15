@@ -1,154 +1,141 @@
-import express from "express";
-import multer from "multer";
-import dotenv from "dotenv";
-import cors from "cors";
-import * as pdfjsLib from 'pdfjs-dist';
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import express from 'express';
+import multer from 'multer';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+
+// ✅ Fix the worker source issue
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.0.279/pdf.worker.min.js';
 
 dotenv.config();
+
 const app = express();
 
-// Set up the PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-
-// Configure multer for file uploads
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 4 * 1024 * 1024 }, // 4MB limit
+  limits: {
+    fileSize: 4 * 1024 * 1024, // Limit to 4MB
+  },
 });
 
-// ✅ Fix CORS: Allow only the frontend domain
-app.use(
-  cors({
-    origin: "https://sum-flax.vercel.app",
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type"],
-  })
-);
+// ✅ Fix the CORS configuration
+app.use(cors({
+  origin: "https://sum-flax.vercel.app", // Allow only this origin
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type"],
+}));
 
 app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-/**
- * 📄 Function to Extract Text from PDF
- */
 async function parsePDF(buffer) {
   try {
-    console.log("📄 Parsing PDF...");
-    console.log(`Buffer length: ${buffer.length} bytes`);
-    
-    if (!buffer || buffer.length === 0) {
-      throw new Error("Empty buffer received");
-    }
+    console.log('📄 Parsing PDF...');
 
-    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+    // Convert Buffer to Uint8Array
+    const uint8Array = new Uint8Array(buffer);
+
+    const loadingTask = pdfjsLib.getDocument({
+      data: uint8Array,
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: true,
+      disableFontFace: true,
+      nativeImageDecoderSupport: 'none',
+    });
+
+    const pdf = await loadingTask.promise;
+    console.log(`✅ PDF loaded. Number of pages: ${pdf.numPages}`);
+
     let text = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
+    const maxPages = Math.min(pdf.numPages, 50);
+
+    for (let i = 1; i <= maxPages; i++) {
+      console.log(`🔹 Processing page ${i}/${maxPages}`);
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      text += content.items.map(item => item.str).join(' ') + '\n';
+      text += content.items.map(item => item.str).join(' ') + ' ';
+      await page.cleanup();
     }
 
-    console.log(`✅ PDF Extracted Text Length: ${text.length}`);
+    console.log('✅ PDF parsing completed successfully');
     return text.trim();
   } catch (error) {
-    console.error("❌ PDF Parsing Error:", error);
-    throw new Error("Failed to extract text from PDF");
+    console.error('❌ PDF Parsing Error:', error);
+    throw new Error('Failed to extract text from PDF');
   }
 }
 
-/**
- * ✍️ Function to Summarize Extracted Text using Gemini AI
- */
 async function summarizeText(text) {
   try {
-    console.log("✨ Summarizing text...");
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+    console.log('📝 Summarizing text...');
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
 
-    // ✅ Split text into chunks (Max: 30,000 chars per API request)
     const maxChunkLength = 30000;
-    const chunks = text.match(new RegExp(`.{1,${maxChunkLength}}`, "g")) || [];
+    const chunks = text.match(new RegExp(`.{1,${maxChunkLength}}`, 'g')) || [];
 
-    let fullSummary = "";
+    let fullSummary = '';
     for (const chunk of chunks) {
       const response = await model.generateContent({
-        contents: [{ role: "user", parts: [{ text: `Summarize this text concisely:\n\n${chunk}` }] }],
+        contents: [{ role: 'user', parts: [{ text: `Summarize this text in a concise manner:\n\n${chunk}` }] }]
       });
 
       const chunkSummary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
       if (chunkSummary) {
-        fullSummary += chunkSummary + "\n\n";
+        fullSummary += chunkSummary + '\n\n';
       }
     }
 
     return fullSummary.trim();
   } catch (error) {
-    console.error("❌ Summarization Error:", error);
-    throw new Error("Summarization failed");
+    console.error('❌ Summarization Error:', error);
+    throw new Error('Summarization failed');
   }
 }
 
-/**
- * 🚀 Upload & Process PDF Route
- */
-app.post("/upload", upload.single("file"), async (req, res) => {
-  console.log("📥 Upload request received");
+app.post('/upload', upload.single('file'), async (req, res) => {
+  console.log('📥 Upload request received');
 
   try {
     if (!req.file) {
-      console.log("❌ No file provided");
-      return res.status(400).json({ error: "No file uploaded" });
+      console.log('❌ No file provided');
+      return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    console.log("📂 File received:", {
-      fieldname: req.file.fieldname,
-      originalname: req.file.originalname,
-      encoding: req.file.encoding,
-      mimetype: req.file.mimetype,
+    console.log('📂 File received:', {
       size: req.file.size,
-      buffer: req.file.buffer ? `${req.file.buffer.length} bytes` : 'No buffer'
+      mimetype: req.file.mimetype,
     });
 
-    if (req.file.mimetype !== "application/pdf") {
-      console.log("❌ Invalid file type:", req.file.mimetype);
-      return res.status(400).json({ error: "Only PDF files are allowed" });
+    if (req.file.mimetype !== 'application/pdf') {
+      console.log('❌ Invalid file type:', req.file.mimetype);
+      return res.status(400).json({ error: 'Only PDF files are allowed' });
     }
 
-    // ✅ Extract text from PDF
     const text = await parsePDF(req.file.buffer);
-    console.log("📄 Text extracted, length:", text.length);
+    console.log('📄 Text extracted, length:', text.length);
 
-    // ✅ Summarize the text
     const summary = await summarizeText(text);
-    console.log("✅ Summary generated, length:", summary.length);
+    console.log('✅ Summary generated, length:', summary.length);
 
     res.json({ success: true, summary });
   } catch (error) {
-    console.error("❌ Error processing file:", error);
+    console.error('❌ Error processing file:', error);
     res.status(500).json({
       success: false,
-      error: error.message || "Failed to process file",
-      details: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      error: error.message || 'Failed to process file',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
     });
   }
 });
 
-/**
- * 🔄 Health Check Route
- */
 app.get("/", (req, res) => {
-  res.status(200).json({
-    status: "healthy",
-    version: "1.0.0",
+  res.status(200).json({ 
+    status: 'healthy',
+    version: '1.0.0',
   });
 });
 
-// ✅ Start the server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
-// ✅ Export Express App for Deployment
 export default app;
