@@ -26,8 +26,8 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// CORS configuration
-app.use(cors()); // Allow all origins
+// CORS configuration (no restrictions)
+app.use(cors()); // Allow all origins, methods, and headers
 app.use(express.json());
 
 // Initialize Google Generative AI
