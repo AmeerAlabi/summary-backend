@@ -65,7 +65,7 @@ async function summarizeText(text) {
 
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
     const response = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: `Summarize this text in 2000 words:\n\n${text}` }] }],
+      contents: [{ role: "user", parts: [{ text: `Summarize this text:\n\n${text}` }] }],
     });
 
     console.log("🛠 Full API Response:", JSON.stringify(response, null, 2));
