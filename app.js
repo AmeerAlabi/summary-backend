@@ -4,9 +4,6 @@ import multer from 'multer';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { readFile } from 'fs/promises';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 
 dotenv.config();
 
@@ -32,7 +29,6 @@ app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Updated PDF parsing function with legacy build
 async function parsePDF(buffer) {
   try {
     console.log('Starting PDF parsing...');
