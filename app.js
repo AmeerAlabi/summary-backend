@@ -33,9 +33,12 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 async function parsePDF(buffer) {
   try {
     console.log('Starting PDF parsing...');
-    
+
+    // Convert Buffer to Uint8Array
+    const uint8Array = new Uint8Array(buffer);
+
     const loadingTask = getDocument({
-      data: buffer,
+      data: uint8Array, // Use Uint8Array instead of Buffer
       useWorkerFetch: false,
       isEvalSupported: false,
       useSystemFonts: true,
@@ -45,20 +48,20 @@ async function parsePDF(buffer) {
 
     const pdf = await loadingTask.promise;
     console.log(`PDF loaded. Number of pages: ${pdf.numPages}`);
-    
+
     let text = '';
     const maxPages = Math.min(pdf.numPages, 50);
-    
+
     for (let i = 1; i <= maxPages; i++) {
       console.log(`Processing page ${i}/${maxPages}`);
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
       text += content.items.map(item => item.str).join(' ') + ' ';
-      
+
       // Clean up page resources
       await page.cleanup();
     }
-    
+
     console.log('PDF parsing completed successfully');
     return text.trim();
   } catch (error) {
@@ -71,22 +74,22 @@ async function summarizeText(text) {
   try {
     console.log('Starting text summarization...');
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
-    
+
     const maxChunkLength = 30000;
     const chunks = text.match(new RegExp(`.{1,${maxChunkLength}}`, 'g')) || [];
-    
+
     let fullSummary = '';
     for (const chunk of chunks) {
       const response = await model.generateContent({
         contents: [{ role: 'user', parts: [{ text: `Summarize this text in a concise manner:\n\n${chunk}` }] }]
       });
-      
+
       const chunkSummary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
       if (chunkSummary) {
         fullSummary += chunkSummary + '\n\n';
       }
     }
-    
+
     return fullSummary.trim();
   } catch (error) {
     console.error('Summarization error:', error);
@@ -96,7 +99,7 @@ async function summarizeText(text) {
 
 app.post('/upload', upload.single('file'), async (req, res) => {
   console.log('Upload request received');
-  
+
   try {
     if (!req.file) {
       console.log('No file provided');
@@ -113,7 +116,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Only PDF files are allowed' });
     }
 
-    const text = await parsePDF(req.file.buffer);
+    const text = await parsePDF(req.file.buffer); // Pass the Buffer to parsePDF
     console.log('Text extracted, length:', text.length);
 
     const summary = await summarizeText(text);
