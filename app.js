@@ -1,6 +1,6 @@
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.js';
 import express from 'express';
 import multer from 'multer';
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.js';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -9,6 +9,9 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 dotenv.config();
+
+// Set up the worker for pdfjs-dist
+GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 const app = express();
 
