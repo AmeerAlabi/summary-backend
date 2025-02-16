@@ -17,7 +17,10 @@ app.use(cors({
   allowedHeaders: "Content-Type",
 }));
 
-app.use(express.json());  // ✅ Middleware for JSON support
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).send('Internal Server Error');
+});
 
 // Initialize Gemini API
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
