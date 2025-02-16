@@ -38,7 +38,6 @@ async function parsePDF(buffer) {
       text += content.items.map((item) => item.str).join(' ') + '\n\n';
     }
 
-    // Clean up the text
     text = text.replace(/\s+/g, ' ').trim();
     
     console.log('✅ Extracted text:', text.substring(0, 200));
@@ -49,15 +48,21 @@ async function parsePDF(buffer) {
   }
 }
 
-async function retryWithBackoff(fn, retries = 3, delayMs = 2000) {
+// Improved exponential backoff for handling Too Many Requests (429)
+async function retryWithBackoff(fn, retries = 5, delayMs = 5000) {
   for (let i = 0; i < retries; i++) {
     try {
       return await fn();
     } catch (error) {
       console.error(`⚠️ Attempt ${i + 1} failed:`, error.message);
-      if (i === retries - 1) throw error;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs *= 2;
+      
+      if (error.message.includes("429 Too Many Requests")) {
+        const waitTime = delayMs * (i + 1);
+        console.warn(`⏳ Rate limited. Retrying in ${waitTime / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      } else {
+        throw error; // Stop retrying for non-429 errors
+      }
     }
   }
 }
@@ -96,7 +101,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
     const buffer = req.file.buffer;
     const text = await parsePDF(buffer);
-
     const summary = await summarizeText(text);
 
     res.json({ success: true, summary });
