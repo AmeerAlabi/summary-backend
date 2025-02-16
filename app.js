@@ -1,44 +1,47 @@
 import express from 'express';
 import multer from 'multer';
-import { getDocument } from 'pdfjs-dist';
 import dotenv from 'dotenv';
-import cors from 'cors';  // ✅ Import CORS
+import cors from 'cors';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getDocument } from 'pdfjs-dist';
 
 dotenv.config();
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ✅ Enable CORS for frontend requests
 app.use(cors({ 
-  origin: "*", // Temporarily allow all origins for testing
+  origin: process.env.ALLOWED_ORIGIN || "*",
   methods: "GET,POST",
   allowedHeaders: "Content-Type",
 }));
 
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).send('Internal Server Error');
-});
+app.use(express.json());
 
-// Initialize Gemini API
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// 📝 Parse PDF and extract text using pdfjs-dist
 async function parsePDF(buffer) {
   try {
     const uint8Array = new Uint8Array(buffer);
-    const pdf = await getDocument(uint8Array).promise;
+    const pdf = await getDocument({ 
+      data: uint8Array, 
+      useSystemFonts: true,
+      disableFontFace: true,
+      useWorkerFetch: false 
+    }).promise;
+    
     let text = '';
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      text += content.items.map((item) => item.str).join(' ');
+      text += content.items.map((item) => item.str).join(' ') + '\n\n';
     }
 
-    console.log('✅ Extracted text:', text.substring(0, 200)); // Debugging log
+    // Clean up the text
+    text = text.replace(/\s+/g, ' ').trim();
+    
+    console.log('✅ Extracted text:', text.substring(0, 200));
     return text;
   } catch (error) {
     console.error('❌ Error parsing PDF:', error);
@@ -46,21 +49,19 @@ async function parsePDF(buffer) {
   }
 }
 
-// 📌 Helper function for exponential backoff retries
 async function retryWithBackoff(fn, retries = 3, delayMs = 2000) {
   for (let i = 0; i < retries; i++) {
     try {
       return await fn();
     } catch (error) {
       console.error(`⚠️ Attempt ${i + 1} failed:`, error.message);
-      if (i === retries - 1) throw new Error('Exceeded retry attempts');
+      if (i === retries - 1) throw error;
       await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs *= 2; // Exponential backoff
+      delayMs *= 2;
     }
   }
 }
 
-// ✨ Summarize extracted text using Gemini
 async function summarizeText(text) {
   return retryWithBackoff(async () => {
     console.log('🔹 Sending text to Gemini for summarization:', text.substring(0, 200));
@@ -72,7 +73,6 @@ async function summarizeText(text) {
 
     console.log('🛠 Full API Response:', JSON.stringify(response, null, 2));
 
-    // ✅ Extract the summary correctly
     const summary = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
     if (!summary) {
@@ -84,7 +84,6 @@ async function summarizeText(text) {
   });
 }
 
-// 📤 Upload route (handles PDF processing)
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -107,6 +106,10 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// 🌍 Start the server
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).send('Internal Server Error');
+});
+
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
